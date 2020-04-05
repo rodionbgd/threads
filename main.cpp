@@ -3,28 +3,27 @@
 #include <thread>
 #include <mutex>
 #include <queue>
-#include <windows.h>
 #include <iomanip>
 
 std::mutex g_lock;
 std::queue<int> data;
 
-void write(int &wr_per_second) {
-    while (true) {
-        g_lock.lock();
+void write(int &wr_per_second, bool &iswork) {
+    while (iswork) {
+        const std::lock_guard<std::mutex> lock(g_lock);
         data.push(wr_per_second); // произвольное сообщение
         wr_per_second++;
-        g_lock.unlock();
     }
 }
 
-void read(int &rd_per_second) {
-    while (true) {
-        if (!data.empty()) {
-            g_lock.lock();
-            data.pop();
-            rd_per_second++;
-            g_lock.unlock();
+void read(int &rd_per_second, bool &iswork, int max) {
+    while (iswork) {
+        while (rd_per_second < max && iswork) {
+            if (!data.empty()) {
+                const std::lock_guard<std::mutex> lock(g_lock);
+                data.pop();
+                rd_per_second++;
+            }
         }
     }
 
@@ -37,24 +36,34 @@ double elapsedseconds(std::chrono::time_point<std::chrono::system_clock> startti
 }
 
 int main() {
-    int wr_per_second = 0;
-    int rd_per_second = 0;
+    int wr_per_second = 0,
+            rd_per_second = 0,
+            tmp_wr, tmp_rd;
+    int max_msg = 200000; // макс кол-во считанных сообщений/сек
+    bool iswork = true; // флаг завершения работы потока
+    int worktime = 25;
+
     auto starttime = std::chrono::system_clock::now();
-    std::thread thr_write(write, std::ref(wr_per_second));
-    std::thread thr_read(read, std::ref(rd_per_second));
-    int tmp_wr = wr_per_second;
-    int tmp_rd = rd_per_second;
-    while (elapsedseconds(starttime) < 120) {
+
+    std::thread thr_write(write, std::ref(wr_per_second), std::ref(iswork));
+    std::thread thr_read(read, std::ref(rd_per_second), std::ref(iswork), max_msg);
+    tmp_wr = wr_per_second;
+    tmp_rd = rd_per_second;
+
+    while (elapsedseconds(starttime) < worktime) {
         auto curtime = std::chrono::time_point<std::chrono::system_clock>(std::chrono::system_clock::now() - starttime);
         std::time_t t = std::chrono::system_clock::to_time_t(curtime);
         std::cout << std::put_time(std::localtime(&t), "%M:%S") << " "; // таймер с миллисекундами нереально отследить
 
-        std::cout << tmp_wr - tmp_rd << std::endl;
+        std::cout << "read msg = " << tmp_rd << " delta = " << tmp_wr - tmp_rd << std::endl;
         tmp_wr = wr_per_second - tmp_wr; // расчет кол-ва записанных/считанных сообщений за прошедшую секунду
-        tmp_rd = rd_per_second - tmp_rd;
+        tmp_rd = rd_per_second;
+        rd_per_second = 0;
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
+    iswork = false;
     thr_write.join();
     thr_read.join();
+
     return 0;
 }
